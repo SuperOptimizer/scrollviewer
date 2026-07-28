@@ -1,0 +1,17 @@
+find_package(CURL CONFIG REQUIRED)
+
+add_library(sv_store STATIC
+  ChunkStore.h
+  ChunkStore.cpp
+  LocalStore.h
+  LocalStore.cpp
+  HttpStore.h
+  HttpStore.cpp
+  DiskCacheStore.h
+  DiskCacheStore.cpp
+)
+target_include_directories(sv_store PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/..)
+target_link_libraries(sv_store
+  PUBLIC sv_core
+  PRIVATE sv_options CURL::libcurl
+)

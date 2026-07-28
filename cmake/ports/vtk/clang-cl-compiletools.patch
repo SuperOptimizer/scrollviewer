@@ -1,0 +1,14 @@
+diff --git a/CMake/vtkcompiletools-config.cmake.in b/CMake/vtkcompiletools-config.cmake.in
+index 1111111..2222222 100644
+--- a/CMake/vtkcompiletools-config.cmake.in
++++ b/CMake/vtkcompiletools-config.cmake.in
+@@ -30,7 +30,8 @@ else ()
+ endif ()
+
+ if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR
+-    CMAKE_CXX_COMPILER_ID MATCHES "Clang")
++    (CMAKE_CXX_COMPILER_ID MATCHES "Clang" AND
++     NOT CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC"))
+   set(_compile_tools_command
+     -dM -E
+     -o "${_compile_tools_output_file}"

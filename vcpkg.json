@@ -1,0 +1,30 @@
+{
+  "name": "scrollviewer",
+  "version-string": "0.1.0",
+  "dependencies": [
+    {
+      "name": "qtbase",
+      "default-features": false,
+      "features": ["gui", "widgets", "opengl"]
+    },
+    {
+      "name": "vtk",
+      "default-features": false,
+      "features": ["qt", "opengl"]
+    },
+    "blosc2",
+    "nlohmann-json",
+    {
+      "name": "curl",
+      "default-features": false,
+      "features": ["ssl", "http2"]
+    },
+    "zstd"
+  ],
+  "features": {
+    "tests": {
+      "description": "Build unit tests",
+      "dependencies": ["catch2"]
+    }
+  }
+}
