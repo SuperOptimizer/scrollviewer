@@ -238,6 +238,43 @@ bool ViewerWindow::openVolume(const std::string& source) {
   planner_ = std::make_unique<render::WorkingSetPlanner>(
       l0.shape, /*spacing=*/1.0, chunkDim, levels, manifest_);
 
+  // Prefetch whole coarse levels once at open (coarsest first, as many
+  // levels as fit a fixed budget): fallback rendering can then resolve
+  // every ray from any camera angle, so orbiting a cold remote volume
+  // never pops. Priority sits just below planner/feedback requests of the
+  // same level; preRenderUpload drains everything decoded to the GPU.
+  {
+    const std::uint64_t brickBytes =
+        std::uint64_t{chunkDim} * chunkDim * chunkDim;
+    std::uint64_t budget = 512ull << 20;
+    std::vector<data::BrickRequest> prefetch;
+    for (int li = levels - 1; li >= 0; --li) {
+      const auto g = volume_->level(li).chunkGridDims();  // z,y,x
+      std::vector<data::BrickRequest> lvl;
+      bool fits = true;
+      for (std::uint32_t z = 0; z < g[0] && fits; ++z)
+        for (std::uint32_t y = 0; y < g[1] && fits; ++y)
+          for (std::uint32_t x = 0; x < g[2] && fits; ++x) {
+            if (manifest_ && manifest_->hasLevel(li) &&
+                manifest_->empty(li, z, y, x))
+              continue;
+            lvl.push_back(data::BrickRequest{
+                data::BrickKey{volumeId_,
+                               data::ChunkCoord{static_cast<std::uint8_t>(li),
+                                                z, y, x}},
+                1000.f * float(li) + 1.f});
+            fits = std::uint64_t{lvl.size()} * brickBytes <= budget;
+          }
+      if (!fits) break;
+      budget -= std::uint64_t{lvl.size()} * brickBytes;
+      prefetch.insert(prefetch.end(), lvl.begin(), lvl.end());
+    }
+    if (!prefetch.empty()) {
+      pipeline_->submit(prefetch);
+      logInfo("prefetch: {} coarse bricks submitted at open", prefetch.size());
+    }
+  }
+
   mapper_ = vtkSmartPointer<render::vtkScrollVolumeMapper>::New();
   mapper_->SetBrickCache(gpuCache_.get());
   mapper_->SetVolumeExtent(l0.shape, 1.0);
