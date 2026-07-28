@@ -89,12 +89,23 @@ void DiskCacheStore::read(std::string key, std::stop_token st,
       fs::remove(p, ec);
     }
 
-    // Miss: forward to remote; persist on success.
+    // Negative cache: a recorded 404 answers instantly instead of paying a
+    // network round trip per absent chunk every session (remote volumes
+    // without a manifest have millions of them).
+    const fs::path missP = p.string() + ".miss";
+    if (fs::exists(missP, ec) && !ec) {
+      cb(std::unexpected(StoreError{StoreError::Kind::NotFound, 0, {}}));
+      return;
+    }
+
+    // Miss: forward to remote; persist success and not-found alike.
     inner_->read(key, st,
-                 [this, key, cb = std::move(cb)](StoreResult r) mutable {
+                 [this, key, missP, cb = std::move(cb)](StoreResult r) mutable {
                    if (r) {
                      if (!writeFileAtomic(pathFor(key), r->span()))
                        logWarn("disk cache write failed for {}", key);
+                   } else if (r.error().kind == StoreError::Kind::NotFound) {
+                     writeFileAtomic(missP, {});
                    }
                    cb(std::move(r));
                  });
@@ -103,7 +114,9 @@ void DiskCacheStore::read(std::string key, std::stop_token st,
 
 void DiskCacheStore::invalidate(const std::string& key) {
   std::error_code ec;
-  fs::remove(pathFor(key), ec);
+  const fs::path p = pathFor(key);
+  fs::remove(p, ec);
+  fs::remove(p.string() + ".miss", ec);
 }
 
 void DiskCacheStore::runEviction() {
