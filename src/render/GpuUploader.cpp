@@ -114,7 +114,7 @@ int GpuUploader::drainToGpu(GpuBrickCache& cache, int budget) {
     glDeleteSync(static_cast<GLsync>(fb.sync));
     {
       std::lock_guard lock(mutex_);
-      for (auto idx : fb.slots) slots_[idx].state = SlotState::Free;
+      for (auto idx : fb.slotIds) slots_[idx].state = SlotState::Free;
     }
     fences_.pop_front();
     freed = true;
@@ -144,7 +144,7 @@ int GpuUploader::drainToGpu(GpuBrickCache& cache, int budget) {
     glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
     FenceBatch fb;
     fb.sync = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
-    fb.slots = std::move(batch);
+    fb.slotIds = std::move(batch);
     fences_.push_back(std::move(fb));
   }
 

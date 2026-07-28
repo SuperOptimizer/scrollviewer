@@ -1,7 +1,10 @@
 #include "app/ViewerWindow.h"
 
 #include <QEvent>
+#include <QLabel>
 #include <QMessageBox>
+#include <QSlider>
+#include <QToolBar>
 #include <QVTKOpenGLNativeWidget.h>
 
 #include <vtkCallbackCommand.h>
@@ -10,6 +13,7 @@
 #include <vtkInteractorStyleTrackballCamera.h>
 #include <vtkRenderWindowInteractor.h>
 
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <future>
@@ -85,6 +89,8 @@ ViewerWindow::ViewerWindow(const std::string& source, QWidget* parent)
     return;
   }
 
+  buildDisplayToolbar();
+
   // Replan on camera motion.
   vtkNew<vtkCallbackCommand> camCb;
   camCb->SetClientData(this);
@@ -108,6 +114,46 @@ ViewerWindow::ViewerWindow(const std::string& source, QWidget* parent)
 ViewerWindow::~ViewerWindow() {
   // Pipeline before store/pools (teardown contract).
   pipeline_.reset();
+}
+
+void ViewerWindow::buildDisplayToolbar() {
+  auto* tb = addToolBar("Display");
+  tb->setMovable(false);
+  auto addSlider = [&](const QString& name, int min, int max, int value) {
+    tb->addWidget(new QLabel(QString("  %1 ").arg(name)));
+    auto* s = new QSlider(Qt::Horizontal);
+    s->setRange(min, max);
+    s->setValue(value);
+    s->setFixedWidth(150);
+    tb->addWidget(s);
+    connect(s, &QSlider::valueChanged, this,
+            &ViewerWindow::applyDisplaySettings);
+    return s;
+  };
+  levelSlider_ = addSlider("level", 0, 255, 128);
+  windowSlider_ = addSlider("window", 1, 255, 255);
+  opacitySlider_ = addSlider("opacity", 1, 200, 50);
+}
+
+void ViewerWindow::applyDisplaySettings() {
+  const float level = static_cast<float>(levelSlider_->value()) / 255.f;
+  const float window = static_cast<float>(windowSlider_->value()) / 255.f;
+  if (mapper_) {
+    mapper_->SetWindowLevel(window, level);
+    mapper_->SetOpacityScale(static_cast<float>(opacitySlider_->value()) /
+                             1000.f);
+  }
+  // Keep the planner's pre-fetch culling in lockstep with the GPU's
+  // occupancy skip: bricks whose max density can't clear the window's
+  // zero-opacity cutoff are never even requested.
+  const float cut = std::max(0.f, level - 0.5f * window);
+  if (planner_)
+    planner_->setVisibilityThreshold(
+        static_cast<std::uint8_t>(std::min(255.f, cut * 255.f)));
+  // Slider drags re-render every tick: reuse the wheel-burst window so they
+  // run at interaction quality, with a full-quality pass on settle.
+  lastWheel_ = std::chrono::steady_clock::now();
+  streamingActive_ = true;  // re-render + replan under the new window
 }
 
 bool ViewerWindow::eventFilter(QObject* watched, QEvent* event) {

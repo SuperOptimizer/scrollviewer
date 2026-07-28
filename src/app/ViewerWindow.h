@@ -25,6 +25,7 @@
 #include "zarr/OmeZarrVolume.h"
 
 class QVTKOpenGLNativeWidget;
+class QSlider;
 
 namespace sv::app {
 
@@ -43,12 +44,17 @@ class ViewerWindow : public QMainWindow {
 
  private:
   bool openVolume(const std::string& source);
+  void buildDisplayToolbar();
+  void applyDisplaySettings();
   void onCameraChanged();
   void pumpStreaming();   // timer tick: replan + schedule renders while loading
   void preRenderUpload(); // mapper callback, GL context current
 
   QVTKOpenGLNativeWidget* vtkWidget_ = nullptr;
   QTimer streamTimer_;
+  QSlider* levelSlider_ = nullptr;
+  QSlider* windowSlider_ = nullptr;
+  QSlider* opacitySlider_ = nullptr;
 
   vtkNew<vtkRenderer> renderer_;
   vtkNew<vtkVolume> volumeActor_;

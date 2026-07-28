@@ -226,15 +226,8 @@ ivec3 tileTexel(uint t, ivec3 brick) {{
 
 uint fetchPageEntry(int level, ivec3 brick) {{
   uint d = fetchDir(level, brick >> 4);
-  if (d == 0u) return 0u;
-  if (d == 1u) return 0x80000000u;
+  if (d < 2u) return (d == 1u) ? 0x80000000u : 0u;
   return texelFetch(tilePool, tileTexel(d - 2u, brick), 0).r;
-}}
-
-vec2 fetchOcc(int level, ivec3 brick) {{
-  uint d = fetchDir(level, brick >> 4);
-  if (d < 2u) return vec2(0.0, 1.0);
-  return texelFetch(occPool, tileTexel(d - 2u, brick), 0).rg;
 }}
 
 bool rayBox(vec3 ro, vec3 rd, vec3 bmin, vec3 bmax, out float t0, out float t1) {{
@@ -277,8 +270,12 @@ void main() {{
     // Cone LOD at the brick entry point (GigaVoxels-style), never finer
     // than the frame's minimum.
     float wpp = wppConst + wppPerDist * t;
-    int lod = clamp(int(floor(log2(max(1.0, wpp / voxelWorld0)))), minLod,
-                    kLevels - 1);
+    // Opacity-adaptive LOD: behind ~2/3 accumulated opacity the remaining
+    // contribution is small enough that one-level-coarser sampling is
+    // invisible — and it also stops streaming requests for occluded bricks.
+    int lod = clamp(int(floor(log2(max(1.0, wpp / voxelWorld0)))) +
+                        int(acc.a * 1.5),
+                    minLod, kLevels - 1);
     vec3 p = (ro + t * rd) / volSizeWorld;
 
     // Fallback walk. EMPTY entries chain upward: the coarsest contiguous
@@ -288,14 +285,21 @@ void main() {{
     int L = -1;
     uint e = 0u;
     ivec3 brick = ivec3(0);
+    bool tileJump = false;  // empty came from a whole-tile ALL_EMPTY entry
+    uint dSel = 0u;         // directory entry of the selected level
     for (int i = lod; i < kLevels; ++i) {{
       vec3 v = p * levelShape[i];
       ivec3 b = ivec3(clamp(floor(v / chunkDim), vec3(0.0), gridDim[i] - 1.0));
-      uint pe = fetchPageEntry(i, b);
+      uint d = fetchDir(i, b >> 4);
+      uint pe = (d == 0u) ? 0u
+              : (d == 1u) ? 0x80000000u
+              : texelFetch(tilePool, tileTexel(d - 2u, b), 0).r;
       if ((pe & 0x80000000u) != 0u) {{
         L = i;
         e = pe;
         brick = b;
+        tileJump = (d == 1u);
+        dSel = d;
         continue;  // empty: try to widen the jump at a coarser level
       }}
       if ((pe & 0x40000000u) != 0u) {{
@@ -303,6 +307,7 @@ void main() {{
           L = i;
           e = pe;
           brick = b;
+          dSel = d;
         }}
         break;
       }}
@@ -326,11 +331,22 @@ void main() {{
 
     // Skip bricks that are empty or entirely below the visibility window.
     bool emptyBrick = (e & 0x80000000u) != 0u;
-    if (!emptyBrick) {{
-      vec2 mm = fetchOcc(L, brick);
+    if (!emptyBrick && dSel >= 2u) {{
+      // dSel was fetched during the walk: index the occ pool directly.
+      vec2 mm = texelFetch(occPool, tileTexel(dSel - 2u, brick), 0).rg;
       emptyBrick = mm.y <= occSkipThreshold;
     }}
     if (emptyBrick) {{
+      if (tileJump) {{
+        // The whole 16^3-brick tile is known empty: exit the tile AABB in
+        // one jump instead of crawling across it brick by brick.
+        vec3 tileWorld = 16.0 * brickWorld;
+        vec3 tmin = vec3(brick >> 4) * tileWorld;
+        vec3 tfar = mix(tmin + tileWorld, tmin, lessThan(rd, vec3(0.0)));
+        tExit = min(min((tfar.x - ro.x) * invRd.x,
+                        (tfar.y - ro.y) * invRd.y),
+                    (tfar.z - ro.z) * invRd.z);
+      }}
       t = max(tExit, t) + dt * 0.05;
       continue;
     }}
@@ -352,17 +368,61 @@ void main() {{
                          float((e >> 20) & 0x3FFu)) * borderedDim + 1.0;
     float stepRel = dt / dtMin;
     float tEnd = min(tExit, t1);
+
+    // Sub-brick empty skipping: probe the covering coarser brick already in
+    // the pool (each coarse voxel spans 8 samples here). A downsampled voxel
+    // at/below the visibility cutoff is treated as authoritatively empty at
+    // full res — a hair of accuracy at content boundaries traded for
+    // skipping dead runs inside partially-empty bricks.
+    int Lc = min(L + 3, kLevels - 1);
+    ivec3 probeTexel = ivec3(0);
+    ivec3 probeOrigin = ivec3(0);
+    bool probeOk = false;
+    if (Lc > L) {{
+      // Brick spans at L are chunkDim-aligned, so one coarse brick covers it.
+      ivec3 startLc = (brick * int(chunkDim)) >> (Lc - L);
+      ivec3 bLc = startLc / int(chunkDim);
+      uint ec = fetchPageEntry(Lc, bLc);
+      if ((ec & 0x40000000u) != 0u) {{
+        probeOk = true;
+        probeTexel = ivec3(int(ec & 0x3FFu), int((ec >> 10) & 0x3FFu),
+                           int((ec >> 20) & 0x3FFu)) * int(borderedDim) + 1;
+        probeOrigin = bLc * int(chunkDim);
+      }}
+    }}
+
     int sRun = 0;
-    for (; sRun < 160 && t < tEnd && acc.a < 0.98; ++sRun) {{
-      vec3 v = ((ro + t * rd) / volSizeWorld) * levelShape[L];
-      vec3 inBrick = clamp(v - vec3(brick) * chunkDim, vec3(0.0),
-                           vec3(chunkDim));
-      float dens = texture(brickPool, (poolBase + inBrick) / poolTexels).r;
-      float w = clamp((dens - winCenter) / winWidth + 0.5, 0.0, 1.0);
-      float a = 1.0 - pow(1.0 - w * opacityScale, stepRel);
-      acc.rgb += (1.0 - acc.a) * a * vec3(w);
-      acc.a   += (1.0 - acc.a) * a;
-      t += dt;
+    for (int cell = 0; cell < 64 && t < tEnd && acc.a < 0.98; ++cell) {{
+      float tCellEnd = tEnd;
+      if (probeOk) {{
+        ivec3 cv = ivec3(floor(((ro + t * rd) / volSizeWorld) *
+                               levelShape[Lc]));
+        vec3 wc = volSizeWorld / levelShape[Lc];
+        vec3 cmin = vec3(cv) * wc;
+        vec3 cfar = mix(cmin + wc, cmin, lessThan(rd, vec3(0.0)));
+        float tCellExit = min(min((cfar.x - ro.x) * invRd.x,
+                                  (cfar.y - ro.y) * invRd.y),
+                              (cfar.z - ro.z) * invRd.z);
+        ivec3 pv = clamp(cv - probeOrigin, ivec3(0), ivec3(int(chunkDim) - 1));
+        float cd = texelFetch(brickPool, probeTexel + pv, 0).r;
+        if (cd <= occSkipThreshold) {{
+          t = max(tCellExit, t) + dt * 0.05;
+          continue;
+        }}
+        tCellEnd = min(tCellExit + dt * 0.05, tEnd);
+      }}
+      for (; sRun < 160 && t < tCellEnd && acc.a < 0.98; ++sRun) {{
+        vec3 v = ((ro + t * rd) / volSizeWorld) * levelShape[L];
+        vec3 inBrick = clamp(v - vec3(brick) * chunkDim, vec3(0.0),
+                             vec3(chunkDim));
+        float dens = texture(brickPool, (poolBase + inBrick) / poolTexels).r;
+        float w = clamp((dens - winCenter) / winWidth + 0.5, 0.0, 1.0);
+        float a = 1.0 - pow(1.0 - w * opacityScale, stepRel);
+        acc.rgb += (1.0 - acc.a) * a * vec3(w);
+        acc.a   += (1.0 - acc.a) * a;
+        t += dt;
+      }}
+      if (sRun >= 160) break;
     }}
     // The final t already sits < dt into the next brick, so sampling stays
     // continuous across the boundary. Nudge only on a zero-sample stall

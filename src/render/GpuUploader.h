@@ -52,7 +52,9 @@ class GpuUploader {
 
   struct FenceBatch {
     void* sync = nullptr;  // GLsync
-    std::vector<std::uint32_t> slots;
+    // Not named `slots`: that is a Qt keyword macro, and this header is
+    // included from Qt translation units (the member would vanish there).
+    std::vector<std::uint32_t> slotIds;
   };
 
   void kickWorkers();
