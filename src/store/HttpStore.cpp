@@ -43,7 +43,12 @@ class HttpStore::Impl {
     if (!baseUrl_.empty() && baseUrl_.back() != '/') baseUrl_ += '/';
     multi_ = curl_multi_init();
     curl_multi_setopt(multi_, CURLMOPT_PIPELINING, CURLPIPE_MULTIPLEX);
-    curl_multi_setopt(multi_, CURLMOPT_MAX_TOTAL_CONNECTIONS, 8L);
+    // S3 (and most object stores) speak HTTP/1.1 only: one request per
+    // connection, no multiplexing. 8 connections capped chunk streaming at
+    // a fraction of the line; size the pool to the pipeline's inflight cap
+    // so HTTP/1.1 concurrency matches what the scheduler issues.
+    curl_multi_setopt(multi_, CURLMOPT_MAX_TOTAL_CONNECTIONS, 64L);
+    curl_multi_setopt(multi_, CURLMOPT_MAX_HOST_CONNECTIONS, 64L);
     thread_ = std::jthread([this](std::stop_token st) { loop(st); });
   }
 
@@ -171,7 +176,9 @@ class HttpStore::Impl {
     curl_easy_setopt(easy, CURLOPT_MAXREDIRS, 4L);
     curl_easy_setopt(easy, CURLOPT_ACCEPT_ENCODING, "");  // allow gzip metadata
     curl_easy_setopt(easy, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_2TLS);
-    curl_easy_setopt(easy, CURLOPT_PIPEWAIT, 1L);  // prefer multiplexing
+    // No PIPEWAIT: it holds transfers back hoping to multiplex over an
+    // existing connection, which never pays off on HTTP/1.1 object stores
+    // and serializes the ramp-up to the connection cap.
     curl_easy_setopt(easy, CURLOPT_CONNECTTIMEOUT_MS, config_.connectTimeoutMs);
     curl_easy_setopt(easy, CURLOPT_TIMEOUT_MS, config_.requestTimeoutMs);
     curl_easy_setopt(easy, CURLOPT_FAILONERROR, 0L);  // inspect status ourselves

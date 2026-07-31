@@ -488,9 +488,11 @@ bool ViewerWindow::loadOverlay(const std::string& overlaySource) {
   if (overlaySource.starts_with("http://") ||
       overlaySource.starts_with("https://")) {
     auto http = std::make_shared<store::HttpStore>(overlaySource);
-    ovStore_ = std::make_shared<store::DiskCacheStore>(
+    auto dc = std::make_shared<store::DiskCacheStore>(
         http, cacheDirFor("overlay-cache", overlaySource), 32ull << 30,
         ioPool_);
+    ioPool_->post([dc](std::stop_token) { dc->runEviction(); });
+    ovStore_ = dc;
   } else {
     ovStore_ = std::make_shared<store::LocalStore>(overlaySource, ioPool_);
   }
@@ -936,8 +938,12 @@ bool ViewerWindow::openVolume(const std::string& source) {
 
   if (source.starts_with("http://") || source.starts_with("https://")) {
     auto http = std::make_shared<store::HttpStore>(source);
-    store_ = std::make_shared<store::DiskCacheStore>(
+    auto dc = std::make_shared<store::DiskCacheStore>(
         http, cacheDirFor("chunk-cache", source), 64ull << 30, ioPool_);
+    // Enforce the budget in the background at open (the scan is seconds on
+    // a large cache and must not block first pixels).
+    ioPool_->post([dc](std::stop_token) { dc->runEviction(); });
+    store_ = dc;
   } else {
     store_ = std::make_shared<store::LocalStore>(source, ioPool_);
   }
