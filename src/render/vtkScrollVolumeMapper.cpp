@@ -632,6 +632,20 @@ void main() {{
       // dSel was fetched during the walk: index the occ pool directly.
       vec2 mm = texelFetch(occPool, tileTexel(dSel - 2u, brick), 0).rg;
       emptyBrick = mm.y <= occSkipThreshold;
+      // Mode-aware culls from the same min/max pair:
+      //  - edge field: spread bounds the gradient (sqrt(3) for the vector
+      //    norm); a near-uniform brick has no edges to show.
+      //  - isosurface: a brick whose max (sharpened upper bound if the
+      //    unsharp filter is on) stays below the iso value has no crossing.
+      float sp = (mm.y - mm.x) * (1.0 + 6.0 * filterAmt) * 1.74;
+      if (filterOp == 3)
+        emptyBrick = emptyBrick || sp <= max(filterFloor, 0.002);
+      if (renderMode == 2) {{
+        float dmax = (filterOp == 3) ? sp
+                     : (filterOp == 2) ? mm.y * (1.0 + filterAmt)
+                                       : mm.y;
+        emptyBrick = emptyBrick || dmax < winCenter;
+      }}
     }}
     if (emptyBrick) {{
       if (tileJump) {{
