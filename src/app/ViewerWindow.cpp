@@ -1223,6 +1223,16 @@ void ViewerWindow::pumpStreaming() {
         decode.count, assemble.count);
   }
   if (anythingPending || !plan.missing.empty()) {
+    convergedTicks_ = 0;
+    vtkWidget_->renderWindow()->Render();
+  } else if (++convergedTicks_ < 40) {
+    // Looks converged, but ray feedback lags rendering by a frame (the
+    // request SSBO is double-buffered behind a fence) and the rays own the
+    // finest level entirely: stopping renders here stalls fine-brick
+    // acquisition until a stray repaint restarts it (measured as a 13 s
+    // dead window at startup). Keep rendering through a quiet streak so
+    // late feedback can land; any new work above resets the streak.
+    mapper_->SetRenderScale(1.0f);
     vtkWidget_->renderWindow()->Render();
   } else {
     // Converged: one final full-resolution frame, then go idle.

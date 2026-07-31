@@ -149,6 +149,7 @@ class ViewerWindow : public QMainWindow {
   std::uint32_t volumeId_ = 1;
   std::uint64_t pumpCounter_ = 0;
   bool streamingActive_ = false;
+  int convergedTicks_ = 0;
   bool interacting_ = false;
   std::chrono::steady_clock::time_point lastMouseMove_{};
   std::chrono::steady_clock::time_point lastWheel_{};
