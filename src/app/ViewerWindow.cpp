@@ -1032,28 +1032,31 @@ bool ViewerWindow::openVolume(const std::string& source) {
   {
     const std::uint64_t brickBytes =
         std::uint64_t{chunkDim} * chunkDim * chunkDim;
-    std::uint64_t budget = 512ull << 20;
+    std::uint64_t budget = 1024ull << 20;
     std::vector<data::BrickRequest> prefetch;
-    for (int li = levels - 1; li >= 0; --li) {
+    // Partial fill: a level that doesn't fully fit still consumes the rest
+    // of the budget (huge volumes' coarsest level alone can exceed it, and
+    // an all-or-nothing check would then prefetch nothing at all).
+    bool full = true;
+    for (int li = levels - 1; li >= 0 && full; --li) {
       const auto g = volume_->level(li).chunkGridDims();  // z,y,x
-      std::vector<data::BrickRequest> lvl;
-      bool fits = true;
-      for (std::uint32_t z = 0; z < g[0] && fits; ++z)
-        for (std::uint32_t y = 0; y < g[1] && fits; ++y)
-          for (std::uint32_t x = 0; x < g[2] && fits; ++x) {
+      for (std::uint32_t z = 0; z < g[0] && full; ++z)
+        for (std::uint32_t y = 0; y < g[1] && full; ++y)
+          for (std::uint32_t x = 0; x < g[2]; ++x) {
             if (manifest_ && manifest_->hasLevel(li) &&
                 manifest_->empty(li, z, y, x))
               continue;
-            lvl.push_back(data::BrickRequest{
+            if (budget < brickBytes) {
+              full = false;
+              break;
+            }
+            budget -= brickBytes;
+            prefetch.push_back(data::BrickRequest{
                 data::BrickKey{volumeId_,
                                data::ChunkCoord{static_cast<std::uint8_t>(li),
                                                 z, y, x}},
                 1000.f * float(li) + 1.f});
-            fits = std::uint64_t{lvl.size()} * brickBytes <= budget;
           }
-      if (!fits) break;
-      budget -= std::uint64_t{lvl.size()} * brickBytes;
-      prefetch.insert(prefetch.end(), lvl.begin(), lvl.end());
     }
     if (!prefetch.empty()) {
       pipeline_->submit(prefetch);
@@ -1116,14 +1119,30 @@ void ViewerWindow::pumpStreaming() {
   // Keep the surface window's working set out of the LRU's reach.
   for (const auto& key : surfaceBricks_) gpuCache_->touch(key);
 
-  // Ray-guided streaming owns the finest level: planner guesses at
-  // plan.desiredLevel are speculative (no occlusion knowledge), so drop them
-  // and let the rays request exactly what they touch. Coarser levels keep
-  // planner prefetch for guaranteed coverage.
+  // Ray feedback owns exactness at the desired level (visible, unoccluded),
+  // but it only arrives while frames render — alone it trickles a few dozen
+  // bricks per round and the network idles in between (measured: 20-80 MB/s
+  // sawtooth on a 76 MB/s line, plus multi-second stalls at convergence).
+  // Keep a bounded nearest-first speculative slice of the planner's
+  // desired-level guesses queued underneath the feedback stream: it keeps
+  // the pipe full and bounds over-fetch of occluded bricks. Feedback
+  // requests (+500 priority) still outrank these within the same level.
   if (plan.desiredLevel < volume_->levelCount() - 1) {
-    std::erase_if(plan.missing, [&](const data::BrickRequest& r) {
-      return r.key.coord.level == plan.desiredLevel;
-    });
+    constexpr std::ptrdiff_t kSpeculative = 96;
+    const auto firstDesired = std::stable_partition(
+        plan.missing.begin(), plan.missing.end(),
+        [&](const data::BrickRequest& r) {
+          return r.key.coord.level != plan.desiredLevel;
+        });
+    if (plan.missing.end() - firstDesired > kSpeculative) {
+      std::nth_element(firstDesired, firstDesired + kSpeculative,
+                       plan.missing.end(),
+                       [](const data::BrickRequest& a,
+                          const data::BrickRequest& b) {
+                         return a.priority > b.priority;
+                       });
+      plan.missing.erase(firstDesired + kSpeculative, plan.missing.end());
+    }
   }
 
   // Ray-guided requests: bricks actual rays needed last frame. They are
@@ -1209,9 +1228,11 @@ void ViewerWindow::pumpStreaming() {
   // Suppressed while the benchmark owns the profiling accumulators.
   if (!benchActive_ && pumpCounter_ % 120 == 0) {
     logInfo(
-        "stream: desiredL={} visible={} missing={} wanted={} queued={} "
-        "inflight={} decoding={} ready={} uploadQ={} gpuResident={} ramMB={}",
-        plan.desiredLevel, plan.visible.size(), plan.missing.size(),
+        "stream: desiredL={} (vpp={:.2f}) visible={} missing={} wanted={} "
+        "queued={} inflight={} decoding={} ready={} uploadQ={} gpuResident={} "
+        "ramMB={}",
+        plan.desiredLevel, plan.voxelsPerPixel, plan.visible.size(),
+        plan.missing.size(),
         wanted.size(), stats.queued, stats.inflightFetches,
         stats.queuedDecodes, stats.ready, uploadQueue_.size(),
         gpuCache_->residentCount(), ramCache_->bytesUsed() >> 20);

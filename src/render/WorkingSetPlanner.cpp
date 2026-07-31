@@ -108,9 +108,13 @@ WorkingSetPlanner::Plan WorkingSetPlanner::plan(vtkRenderer* ren,
   const double worldPerPixel =
       2.0 * halfHeightWorld / std::max(1, viewportHeightPx);
   const double voxelsPerPixel = worldPerPixel / spacing_;
-  int desired = static_cast<int>(std::floor(std::log2(std::max(1.0, voxelsPerPixel))));
+  // Level tracks zoom so we never fetch finer than the screen resolves:
+  // >=1 px per voxel -> level 0, 0.5-1 px -> level 1, 0.25-0.5 px -> 2, ...
+  int desired =
+      static_cast<int>(std::ceil(std::log2(std::max(1.0, voxelsPerPixel))));
   desired = std::clamp(desired, 0, levelCount_ - 1);
   out.desiredLevel = desired;
+  out.voxelsPerPixel = voxelsPerPixel;
 
   const Frustum frustum = extractFrustum(ren);
 

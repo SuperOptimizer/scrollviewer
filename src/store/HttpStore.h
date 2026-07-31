@@ -10,7 +10,7 @@ namespace sv::store {
 struct HttpConfig {
   std::string username;      // basic auth; empty = anonymous
   std::string password;
-  int maxConcurrentStreams = 64;
+  int maxConcurrentStreams = 128;
   int maxRetries = 3;
   long connectTimeoutMs = 10000;
   long requestTimeoutMs = 60000;

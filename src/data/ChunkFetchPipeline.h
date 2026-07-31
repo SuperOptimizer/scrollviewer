@@ -27,7 +27,7 @@ struct ReadyBrick {
 };
 
 struct PipelineConfig {
-  int maxInflightFetches = 64;
+  int maxInflightFetches = 128;
   int maxQueuedDecodes = 0;      // 0 = 2 * decode threads
   std::uint64_t maxReadyPinnedBytes = 1ull << 30;
   unsigned decodeThreads = 0;    // 0 = max(2, hw_concurrency - 4)

@@ -47,8 +47,10 @@ class HttpStore::Impl {
     // connection, no multiplexing. 8 connections capped chunk streaming at
     // a fraction of the line; size the pool to the pipeline's inflight cap
     // so HTTP/1.1 concurrency matches what the scheduler issues.
-    curl_multi_setopt(multi_, CURLMOPT_MAX_TOTAL_CONNECTIONS, 64L);
-    curl_multi_setopt(multi_, CURLMOPT_MAX_HOST_CONNECTIONS, 64L);
+    curl_multi_setopt(multi_, CURLMOPT_MAX_TOTAL_CONNECTIONS,
+                      static_cast<long>(config_.maxConcurrentStreams));
+    curl_multi_setopt(multi_, CURLMOPT_MAX_HOST_CONNECTIONS,
+                      static_cast<long>(config_.maxConcurrentStreams));
     thread_ = std::jthread([this](std::stop_token st) { loop(st); });
   }
 

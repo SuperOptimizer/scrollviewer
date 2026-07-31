@@ -30,6 +30,7 @@ class WorkingSetPlanner {
     std::vector<data::BrickRequest> missing;   // to submit to the pipeline
     std::vector<data::BrickKey> visible;       // resident: LRU-touch these
     int desiredLevel = 0;
+    double voxelsPerPixel = 0.0;  // diagnostic: what desiredLevel came from
   };
 
   // viewportHeightPx: pixels; used to pick the level where one voxel is
