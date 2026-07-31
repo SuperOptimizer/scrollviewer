@@ -147,6 +147,9 @@ ViewerWindow::ViewerWindow(const std::string& source,
   if (const int m = qEnvironmentVariableIntValue("SCROLLVIEWER_MODE"); m > 0)
     modeCombo_->setCurrentIndex(m);
   if (qgetenv("SCROLLVIEWER_NN") == "1") nearestCheck_->setChecked(true);
+  if (const auto sv = qEnvironmentVariable("SCROLLVIEWER_STEP");
+      !sv.isEmpty() && mapper_)
+    mapper_->SetSampleStepScale(sv.toFloat());
 
   if (qgetenv("SCROLLVIEWER_TEST_CLUSTERS") == "1") injectTestClusters();
   if (qgetenv("SCROLLVIEWER_AUTOSEG") == "1")

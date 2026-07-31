@@ -544,9 +544,14 @@ void main() {{
   vec3 invRd = 1.0 / rd;
 
   float dtMin = voxelWorld0 * exp2(float(minLod)) * sampleStepScale;
-  float t = t0 + jitter(gl_FragCoord.xy) * dtMin;
+  float jit = jitter(gl_FragCoord.xy);
+  float t = t0 + jit * dtMin;
   vec4 acc = vec4(0.0);
-  bool requested = false;  // at most one streaming request per fragment
+  // At most one streaming request per fragment, and only ~1/8 of fragments
+  // request per frame: 2M same-address atomicAdds serialize badly, and a
+  // decimated request stream covers the same bricks over a few frames
+  // (the pipeline dedupes). kMaxReq caps the useful count anyway.
+  bool requested = jit > 0.125;
 
   // Brick-marching: resolve the page table once per brick, then inner-loop
   // through the brick's samples straight from the pool texture.
@@ -636,15 +641,18 @@ void main() {{
     }}
 {2}
     if (L > lod && !requested) {{
-      // Sampling coarser than wanted: ask for the finer brick.
-      vec3 vw = p * levelShape[lod];
-      ivec3 want = ivec3(clamp(floor(vw / chunkDim), vec3(0.0),
-                               gridDim[lod] - 1.0));
-      uint idx = atomicAdd(reqCount, 1u);
-      if (idx < kMaxReq)
-        reqs[idx] = uvec2(uint(lod), (uint(want.z) << 20) |
-                                     (uint(want.y) << 10) | uint(want.x));
+      // Sampling coarser than wanted: ask for the finer brick. Plain read
+      // first — once the buffer is full the atomic would be pure contention.
       requested = true;
+      if (reqCount < kMaxReq) {{
+        vec3 vw = p * levelShape[lod];
+        ivec3 want = ivec3(clamp(floor(vw / chunkDim), vec3(0.0),
+                                 gridDim[lod] - 1.0));
+        uint idx = atomicAdd(reqCount, 1u);
+        if (idx < kMaxReq)
+          reqs[idx] = uvec2(uint(lod), (uint(want.z) << 20) |
+                                       (uint(want.y) << 10) | uint(want.x));
+      }}
     }}
 
     // March inside this resident brick: no more page-table traffic.
