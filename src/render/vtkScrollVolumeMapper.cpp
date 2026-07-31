@@ -422,21 +422,27 @@ vec3 poolGrad(vec3 gp) {{
 
 // Per-sample 3D processing, evaluated in pool texel space so it works on
 // whatever LOD the ray is marching (taps stay within the bordered brick).
-float filteredDensity(float dens, vec3 gp) {{
+// One 6-neighbor stencil serves filter AND lighting: the same +-1 taps
+// yield the box blur (sum) and the central-difference gradient
+// (differences), so shaded+filtered modes pay 6 taps, not 12. `grad` is
+// the raw-density gradient (valid whenever filterOp != 0).
+float filteredDensity(float dens, vec3 gp, out vec3 grad) {{
+  grad = vec3(0.0);
   if (filterOp != 0) {{
+    vec3 e = vec3(1.0, 0.0, 0.0);
+    float xp = texture(brickPool, (gp + e.xyy) * invPoolTexels).r;
+    float xm = texture(brickPool, (gp - e.xyy) * invPoolTexels).r;
+    float yp = texture(brickPool, (gp + e.yxy) * invPoolTexels).r;
+    float ym = texture(brickPool, (gp - e.yxy) * invPoolTexels).r;
+    float zp = texture(brickPool, (gp + e.yyx) * invPoolTexels).r;
+    float zm = texture(brickPool, (gp - e.yyx) * invPoolTexels).r;
+    grad = vec3(xp - xm, yp - ym, zp - zm);
     if (filterOp == 3) {{
       // Edge field: gradient magnitude replaces density (fibre/boundary
       // visualization; also isosurfaces nicely in surface mode).
-      dens = clamp(length(poolGrad(gp)) * (1.0 + 6.0 * filterAmt), 0.0, 1.0);
+      dens = clamp(length(grad) * (1.0 + 6.0 * filterAmt), 0.0, 1.0);
     }} else {{
-      vec3 e = vec3(1.0, 0.0, 0.0);
-      float nsum = texture(brickPool, (gp + e.xyy) * invPoolTexels).r +
-                   texture(brickPool, (gp - e.xyy) * invPoolTexels).r +
-                   texture(brickPool, (gp + e.yxy) * invPoolTexels).r +
-                   texture(brickPool, (gp - e.yxy) * invPoolTexels).r +
-                   texture(brickPool, (gp + e.yyx) * invPoolTexels).r +
-                   texture(brickPool, (gp - e.yyx) * invPoolTexels).r;
-      float blur = (nsum + 2.0 * dens) * 0.125;
+      float blur = (xp + xm + yp + ym + zp + zm + 2.0 * dens) * 0.125;
       dens = (filterOp == 1)
                  ? mix(dens, blur, clamp(filterAmt, 0.0, 1.0))     // smooth
                  : clamp(dens + filterAmt * (dens - blur), 0.0, 1.0);  // unsharp
@@ -481,13 +487,15 @@ float shadowFactor(vec3 pw, int L) {{
   int Ls = min(L + 1, kLevels - 1);
   float s = voxelWorld0 * exp2(float(Ls)) * 3.0;  // skip self-occlusion
   float trans = 1.0;
-  for (int i = 0; i < 24 && trans > 0.05; ++i) {{
+  // 16 steps at 1.35x growth span the same distance as 24 at 1.22x; the
+  // per-step density weight is scaled up to keep total extinction close.
+  for (int i = 0; i < 16 && trans > 0.05; ++i) {{
     vec3 pn = (pw + lightDir * s) / volSizeWorld;
     if (any(lessThan(pn, vec3(0.0))) || any(greaterThan(pn, vec3(1.0)))) break;
     float d = densAtLod(pn, Ls);
     float wq = clamp((d - winCenter) / winWidth + 0.5, 0.0, 1.0);
-    trans *= 1.0 - wq * 0.30;
-    s *= 1.22;
+    trans *= 1.0 - wq * 0.42;
+    s *= 1.35;
   }}
   return max(trans, 0.12);  // never pitch black
 }}
@@ -714,7 +722,8 @@ void main() {{
       for (; sRun < 160 && t < tCellEnd && acc.a < 0.96; ++sRun) {{
         vec3 inBrick = clamp(vCur - brickBase, vec3(0.0), vec3(chunkDim));
         float dens = texture(brickPool, (poolBase + inBrick) * invPoolTexels).r;
-        dens = filteredDensity(dens, poolBase + inBrick);
+        vec3 stencilGrad;
+        dens = filteredDensity(dens, poolBase + inBrick, stencilGrad);
         float w = clamp((dens - winCenter) / winWidth + 0.5, 0.0, 1.0);
 {3}        vec3 col = (renderMode == 0) ? vec3(w) : densRamp(w);
 {6}{5}        if (renderMode == 2) {{
@@ -727,9 +736,10 @@ void main() {{
               vec3 vm = ((ro + tm * rd) / volSizeWorld) * levelShape[L];
               vec3 im = clamp(vm - vec3(brick) * chunkDim, vec3(0.0),
                               vec3(chunkDim));
+              vec3 gTmp;
               if (filteredDensity(
                       texture(brickPool, (poolBase + im) * invPoolTexels).r,
-                      poolBase + im) >= winCenter)
+                      poolBase + im, gTmp) >= winCenter)
                 tB = tm;
               else
                 tA = tm;
@@ -750,8 +760,10 @@ void main() {{
         }}
         if (renderMode == 1 && w > 0.02) {{
           // Gradient-magnitude-modulated lighting: homogeneous interiors
-          // stay unshaded, boundaries pick up the surface model.
-          vec3 g = poolGrad(poolBase + inBrick);
+          // stay unshaded, boundaries pick up the surface model. The filter
+          // stencil already produced the gradient; fetch only if it didn't.
+          vec3 g = (filterOp != 0) ? stencilGrad
+                                   : poolGrad(poolBase + inBrick);
           float gm = length(g);
           if (gm > 1e-4) {{
             vec3 N = -g / gm;
