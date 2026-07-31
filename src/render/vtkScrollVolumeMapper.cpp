@@ -1311,6 +1311,14 @@ void vtkScrollVolumeMapper::Render(vtkRenderer* ren, vtkVolume*) {
 
   // Textures: pool on unit 0, page tables on 1..N.
   Cache->poolTexture()->Activate();
+  if (NearestTaps != AppliedNearest) {
+    // Flip the pool's sampler state in place; every shader tap follows.
+    const GLint f = NearestTaps ? GL_NEAREST : GL_LINEAR;
+    glActiveTexture(GL_TEXTURE0 + Cache->poolTexture()->GetTextureUnit());
+    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MIN_FILTER, f);
+    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MAG_FILTER, f);
+    AppliedNearest = NearestTaps;
+  }
   prog->SetUniformi("brickPool",
                     Cache->poolTexture()->GetTextureUnit());
   for (int i = 0; i < Cache->levelCount(); ++i) {

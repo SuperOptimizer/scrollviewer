@@ -85,6 +85,7 @@ class ViewerWindow : public QMainWindow {
   QSlider* lightElSlider_ = nullptr;
   QSlider* lightAmbSlider_ = nullptr;
   QCheckBox* shadowsCheck_ = nullptr;
+  QCheckBox* nearestCheck_ = nullptr;
   QSlider* seedsSlider_ = nullptr;
   QPushButton* segButton_ = nullptr;
   std::atomic<bool> segRunning_{false};

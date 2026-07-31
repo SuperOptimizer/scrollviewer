@@ -87,6 +87,10 @@ class vtkScrollVolumeMapper : public vtkVolumeMapper {
     LightAmbient = ambient;
     ShadowsOn = shadows;
   }
+  // Nearest-neighbor pool taps instead of trilinear: 1 texel per sample
+  // instead of 8, a real win when rays are bandwidth-bound (deep zoom at
+  // fine LODs). Blocky up close, by design.
+  void SetNearestSampling(bool nn) { NearestTaps = nn; }
   void SetVoxelFilter(int op, float amount, float floorV) {
     FilterOp = op;
     FilterAmount = amount;
@@ -191,6 +195,8 @@ class vtkScrollVolumeMapper : public vtkVolumeMapper {
   float LightDir[3] = {0.42f, 0.31f, 0.85f};
   float LightAmbient = 1.f;
   bool ShadowsOn = true;
+  bool NearestTaps = false;
+  bool AppliedNearest = false;  // sampler state currently on the pool
 
   // Surface pass state. The shader program is owned by VTK's shader cache.
   std::shared_ptr<const data::TifXyzSurface> Surface;

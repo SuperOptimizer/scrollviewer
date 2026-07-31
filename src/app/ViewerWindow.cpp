@@ -146,6 +146,7 @@ ViewerWindow::ViewerWindow(const std::string& source,
   // Automated rendering-test hooks (env-driven, used by the test harness).
   if (const int m = qEnvironmentVariableIntValue("SCROLLVIEWER_MODE"); m > 0)
     modeCombo_->setCurrentIndex(m);
+  if (qgetenv("SCROLLVIEWER_NN") == "1") nearestCheck_->setChecked(true);
 
   if (qgetenv("SCROLLVIEWER_TEST_CLUSTERS") == "1") injectTestClusters();
   if (qgetenv("SCROLLVIEWER_AUTOSEG") == "1")
@@ -715,6 +716,13 @@ void ViewerWindow::buildDisplayToolbar() {
   tb->addWidget(shadowsCheck_);
   connect(shadowsCheck_, &QCheckBox::toggled, this,
           &ViewerWindow::applyDisplaySettings);
+  nearestCheck_ = new QCheckBox("fast taps");
+  nearestCheck_->setToolTip(
+      "Nearest-neighbor sampling: 1 texel per tap instead of 8. "
+      "Faster deep zooms, blocky up close.");
+  tb->addWidget(nearestCheck_);
+  connect(nearestCheck_, &QCheckBox::toggled, this,
+          &ViewerWindow::applyDisplaySettings);
   if (hasSurface_) {
     // Slab sliders rebuild the mask (~1 s): apply on release, not per tick.
     slabFrontSlider_ = addSlider("front", 0, 256, 64);
@@ -865,6 +873,7 @@ void ViewerWindow::applyDisplaySettings() {
       mapper_->SetVoxelFilter(filterCombo_->currentIndex(),
                               float(filterAmtSlider_->value()) / 100.f,
                               float(filterFloorSlider_->value()) / 255.f);
+    if (nearestCheck_) mapper_->SetNearestSampling(nearestCheck_->isChecked());
     if (lightAzSlider_) {
       const float az = float(lightAzSlider_->value()) * 3.14159265f / 180.f;
       const float el = float(lightElSlider_->value()) * 3.14159265f / 180.f;
