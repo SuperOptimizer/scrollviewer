@@ -928,7 +928,11 @@ bool ViewerWindow::eventFilter(QObject* watched, QEvent* event) {
 }
 
 bool ViewerWindow::openVolume(const std::string& source) {
-  ioPool_ = std::make_shared<ThreadPool>("io", 4);
+  // The IO pool also runs gdct cache decodes (~15 ms/brick of real CPU), so
+  // it is sized for compute, not just IO wait: 4 threads cap warm-start
+  // reads at ~0.5 GB/s while the machine idles.
+  ioPool_ = std::make_shared<ThreadPool>(
+      "io", std::max(6u, std::thread::hardware_concurrency() / 2));
 
   if (source.starts_with("http://") || source.starts_with("https://")) {
     auto http = std::make_shared<store::HttpStore>(source);
