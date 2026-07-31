@@ -550,7 +550,7 @@ void main() {{
 
   // Brick-marching: resolve the page table once per brick, then inner-loop
   // through the brick's samples straight from the pool texture.
-  for (int outer = 0; outer < 1024 && t < t1 && acc.a < 0.98; ++outer) {{
+  for (int outer = 0; outer < 1024 && t < t1 && acc.a < 0.96; ++outer) {{
     // Cone LOD at the brick entry point (GigaVoxels-style), never finer
     // than the frame's minimum.
     float wpp = wppConst + wppPerDist * t;
@@ -558,7 +558,7 @@ void main() {{
     // contribution is small enough that one-level-coarser sampling is
     // invisible — and it also stops streaming requests for occluded bricks.
     int lod = clamp(int(floor(log2(max(1.0, wpp / voxelWorld0)))) +
-                        int(acc.a * 1.5),
+                        int(acc.a * 2.0),
                     minLod, kLevels - 1);
     vec3 p = (ro + t * rd) / volSizeWorld;
 
@@ -676,7 +676,7 @@ void main() {{
     }}
 
     int sRun = 0;
-    for (int cell = 0; cell < 64 && t < tEnd && acc.a < 0.98; ++cell) {{
+    for (int cell = 0; cell < 64 && t < tEnd && acc.a < 0.96; ++cell) {{
       float tCellEnd = tEnd;
       if (probeOk) {{
         ivec3 cv = ivec3(floor(((ro + t * rd) / volSizeWorld) *
@@ -703,7 +703,7 @@ void main() {{
       vec3 vCur = (ro + t * rd) * vScaleL;
       vec3 vStep = (rd * dt) * vScaleL;
       vec3 brickBase = vec3(brick) * chunkDim;
-      for (; sRun < 160 && t < tCellEnd && acc.a < 0.98; ++sRun) {{
+      for (; sRun < 160 && t < tCellEnd && acc.a < 0.96; ++sRun) {{
         vec3 inBrick = clamp(vCur - brickBase, vec3(0.0), vec3(chunkDim));
         float dens = texture(brickPool, (poolBase + inBrick) * invPoolTexels).r;
         dens = filteredDensity(dens, poolBase + inBrick);
@@ -775,6 +775,8 @@ void main() {{
     if (sRun == 0) t = max(t, tExit) + dt * 0.05;
   }}
   if (acc.a < 0.004) discard;
+  // Terminated at 0.96: treat as fully saturated to avoid a haze band.
+  if (acc.a > 0.955) acc /= acc.a;
   fragColor = acc;
 }}
 )glsl",
