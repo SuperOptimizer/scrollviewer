@@ -1274,8 +1274,10 @@ void ViewerWindow::pumpStreaming() {
 }
 
 void ViewerWindow::preRenderUpload() {
-  // GL context is current (called from mapper Render).
-  constexpr int kUploadBudget = 32;  // async PBO path: cheap per brick
+  // GL context is current (called from mapper Render). Budget is per frame:
+  // small while the user drags (protect frame time), the whole PBO ring
+  // otherwise (initial load converges in fewer frames).
+  const int kUploadBudget = interacting_ ? 12 : 96;
 
   if (!uploader_->initialized()) uploader_->initialize(96);
 
