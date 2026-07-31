@@ -12,6 +12,22 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 option(SCROLLVIEWER_BUILD_TESTS "Build unit tests" ON)
 
+# gpudct: lossy bounded-error DCT codec used to recompress raw chunks in the
+# disk cache (a 128^3 brick is exactly one Vesuvius zarr chunk). Optional:
+# without it the cache stores fetched bytes verbatim.
+set(SV_GPUDCT_DIR "D:/gpudct" CACHE PATH "Path to a gpudct source checkout")
+if(EXISTS ${SV_GPUDCT_DIR}/CMakeLists.txt)
+  set(GPUDCT_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+  set(GPUDCT_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
+  set(GPUDCT_BUILD_BENCH OFF CACHE BOOL "" FORCE)
+  add_subdirectory(${SV_GPUDCT_DIR} gpudct EXCLUDE_FROM_ALL)
+  set(SV_HAVE_GPUDCT ON)
+  message(STATUS "gpudct cache codec: ${SV_GPUDCT_DIR}")
+else()
+  set(SV_HAVE_GPUDCT OFF)
+  message(STATUS "gpudct not found at ${SV_GPUDCT_DIR} - disk cache stores raw bytes")
+endif()
+
 # Shared compile options for all scrollviewer targets.
 add_library(sv_options INTERFACE)
 if(MSVC)
@@ -31,6 +47,7 @@ find_package(VTK COMPONENTS
   CommonCore
   CommonDataModel
   RenderingCore
+  IOImage
   RenderingOpenGL2
   RenderingVolumeOpenGL2
   GUISupportQt

@@ -3,16 +3,19 @@ if(NOT SV_HAVE_GUI)
   return()
 endif()
 
+find_package(nlohmann_json CONFIG REQUIRED)
 set(CMAKE_AUTOMOC ON)
 
 add_executable(scrollviewer WIN32
   main.cpp
   ViewerWindow.h
   ViewerWindow.cpp
+  SurfaceWindow.h
+  SurfaceWindow.cpp
 )
 target_include_directories(scrollviewer PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(scrollviewer PRIVATE
-  sv_options sv_core sv_data sv_render
+  sv_options sv_core sv_data sv_render nlohmann_json::nlohmann_json
   Qt6::Widgets Qt6::OpenGLWidgets
 )
 vtk_module_autoinit(TARGETS scrollviewer MODULES ${VTK_LIBRARIES})

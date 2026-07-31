@@ -42,6 +42,24 @@ bool writeFileAtomic(const fs::path& target, std::span<const std::byte> data) {
   return true;
 }
 
+std::optional<ByteBuffer> readWholeFile(const fs::path& p) {
+  std::error_code ec;
+  const auto size = fs::file_size(p, ec);
+  if (ec) return std::nullopt;
+  ByteBuffer buf = ByteBuffer::uninitialized(size);
+  std::FILE* f = nullptr;
+#ifdef _WIN32
+  _wfopen_s(&f, p.c_str(), L"rb");
+#else
+  f = std::fopen(p.c_str(), "rb");
+#endif
+  if (!f) return std::nullopt;
+  const std::size_t got = std::fread(buf.data(), 1, buf.size(), f);
+  std::fclose(f);
+  if (got != buf.size()) return std::nullopt;
+  return buf;
+}
+
 }  // namespace
 
 DiskCacheStore::DiskCacheStore(std::shared_ptr<ChunkStore> inner,
@@ -65,29 +83,30 @@ void DiskCacheStore::read(std::string key, std::stop_token st,
       return;
     }
 
-    // Cache hit path.
     const fs::path p = pathFor(key);
     std::error_code ec;
-    const auto size = fs::file_size(p, ec);
-    if (!ec) {
-      ByteBuffer buf = ByteBuffer::uninitialized(size);
-      std::FILE* f = nullptr;
-#ifdef _WIN32
-      _wfopen_s(&f, p.c_str(), L"rb");
-#else
-      f = std::fopen(p.c_str(), "rb");
-#endif
-      if (f) {
-        const std::size_t got = std::fread(buf.data(), 1, buf.size(), f);
-        std::fclose(f);
-        if (got == buf.size()) {
-          cb(std::move(buf));
+    auto tp = transcoder_.load(std::memory_order_acquire);
+
+    // Transcoded hit: decode back to the original wire bytes.
+    if (tp) {
+      const fs::path tPath = p.string() + tp->suffix();
+      if (auto stored = readWholeFile(tPath)) {
+        if (auto raw = tp->decode(stored->span())) {
+          cb(std::move(*raw));
           return;
         }
+        logWarn("disk cache: corrupt transcoded entry {}", key);
+        fs::remove(tPath, ec);
       }
-      // Unreadable/short entry: fall through to refetch.
-      fs::remove(p, ec);
     }
+
+    // Verbatim hit.
+    if (auto buf = readWholeFile(p)) {
+      cb(std::move(*buf));
+      return;
+    }
+    // Unreadable/short entry (if any): fall through to refetch.
+    fs::remove(p, ec);
 
     // Negative cache: a recorded 404 answers instantly instead of paying a
     // network round trip per absent chunk every session (remote volumes
@@ -98,17 +117,34 @@ void DiskCacheStore::read(std::string key, std::stop_token st,
       return;
     }
 
-    // Miss: forward to remote; persist success and not-found alike.
-    inner_->read(key, st,
-                 [this, key, missP, cb = std::move(cb)](StoreResult r) mutable {
-                   if (r) {
-                     if (!writeFileAtomic(pathFor(key), r->span()))
-                       logWarn("disk cache write failed for {}", key);
-                   } else if (r.error().kind == StoreError::Kind::NotFound) {
-                     writeFileAtomic(missP, {});
-                   }
-                   cb(std::move(r));
-                 });
+    // Miss: forward to remote; persist success and not-found alike. With a
+    // transcoder the encode (~10 ms/brick) runs on the IO pool, not on the
+    // remote store's callback thread, and the caller gets its bytes first.
+    inner_->read(
+        key, st,
+        [this, key, missP, tp = std::move(tp),
+         cb = std::move(cb)](StoreResult r) mutable {
+          if (r) {
+            if (tp) {
+              ioPool_->post([this, key, tp = std::move(tp),
+                             copy = ByteBuffer::copyOf(r->span())](
+                                std::stop_token) {
+                if (auto enc = tp->encode(copy.span())) {
+                  if (writeFileAtomic(pathFor(key).string() + tp->suffix(),
+                                      enc->span()))
+                    return;
+                }
+                if (!writeFileAtomic(pathFor(key), copy.span()))
+                  logWarn("disk cache write failed for {}", key);
+              });
+            } else if (!writeFileAtomic(pathFor(key), r->span())) {
+              logWarn("disk cache write failed for {}", key);
+            }
+          } else if (r.error().kind == StoreError::Kind::NotFound) {
+            writeFileAtomic(missP, {});
+          }
+          cb(std::move(r));
+        });
   });
 }
 
@@ -117,6 +153,8 @@ void DiskCacheStore::invalidate(const std::string& key) {
   const fs::path p = pathFor(key);
   fs::remove(p, ec);
   fs::remove(p.string() + ".miss", ec);
+  if (auto tp = transcoder_.load(std::memory_order_acquire))
+    fs::remove(p.string() + tp->suffix(), ec);
 }
 
 void DiskCacheStore::runEviction() {

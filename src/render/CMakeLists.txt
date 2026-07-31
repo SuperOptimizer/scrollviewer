@@ -16,6 +16,10 @@ add_library(sv_render STATIC
   WorkingSetPlanner.cpp
   vtkScrollVolumeMapper.h
   vtkScrollVolumeMapper.cpp
+  SurfaceMask.h
+  SurfaceMask.cpp
+  vtkScrollSurfaceMapper.h
+  vtkScrollSurfaceMapper.cpp
 )
 target_include_directories(sv_render PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/..)
 target_link_libraries(sv_render

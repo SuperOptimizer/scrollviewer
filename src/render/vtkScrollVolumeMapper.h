@@ -1,15 +1,21 @@
 #pragma once
 
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <functional>
 #include <memory>
 
 #include <vtkVolumeMapper.h>
 
+#include "data/TifXyzSurface.h"
 #include "render/GpuBrickCache.h"
+#include "render/SurfaceMask.h"
 
 class vtkOpenGLQuadHelper;
+class vtkOpenGLRenderWindow;
+class vtkShaderProgram;
+class vtkMatrix4x4;
 
 namespace sv::render {
 
@@ -63,6 +69,85 @@ class vtkScrollVolumeMapper : public vtkVolumeMapper {
     Level = level;
   }
   void SetOpacityScale(float s) { OpacityScale = s; }
+  // 0 = x-ray (emission/absorption), 1 = shaded DVR (gradient-lit, warm
+  // ramp), 2 = opaque isosurface at winCenter (Cook-Torrance shading).
+  // A uniform switch — no shader rebuild.
+  void SetRenderMode(int m) { RenderMode = m; }
+  // GPU per-sample 3D processing: op 0 = none, 1 = smooth (3D box),
+  // 2 = sharpen (3D unsharp mask), 3 = edge field (gradient magnitude).
+  // floorV is a high-pass cutoff: filtered density below it reads as zero
+  // (and feeds the brick/cell occupancy culling, so it prunes work too).
+  // Directional key light (world-space, toward the light), ambient/fill
+  // scale, and surface-mode volumetric shadow rays.
+  void SetLighting(const std::array<float, 3>& dir, float ambient,
+                   bool shadows) {
+    const float len = std::sqrt(dir[0] * dir[0] + dir[1] * dir[1] +
+                                dir[2] * dir[2]);
+    for (int i = 0; i < 3; ++i) LightDir[i] = dir[i] / std::max(len, 1e-6f);
+    LightAmbient = ambient;
+    ShadowsOn = shadows;
+  }
+  void SetVoxelFilter(int op, float amount, float floorV) {
+    FilterOp = op;
+    FilterAmount = amount;
+    FilterFloor = floorV;
+  }
+
+  // Parametric surface (tifxyz segment): rendered as a mesh in the same
+  // scene, textured by sampling the shared brick pool in a slab of
+  // [-front, +behind] voxels along the surface normal. Missing bricks are
+  // requested through the same feedback stream as the raymarcher.
+  void SetSurface(std::shared_ptr<const data::TifXyzSurface> s) {
+    Surface = std::move(s);
+    SurfaceDirty = true;
+  }
+  void SetSurfaceSlab(float frontVoxels, float behindVoxels) {
+    SlabFront = frontVoxels;
+    SlabBehind = behindVoxels;
+  }
+  void SetSurfaceMean(bool mean) { SlabMean = mean; }
+  // Multiplier from tifxyz coordinate space to this volume's voxel space
+  // (segments are often traced on an older/coarser volume of the scroll).
+  void SetSurfaceScale(float s) {
+    if (s > 0.f && s != SurfScale) {
+      SurfScale = s;
+      SurfaceDirty = true;
+    }
+  }
+  void SetShowVolume(bool b) { ShowVolume = b; }
+  void SetShowSurface(bool b) { ShowSurface = b; }
+
+  // Shell mask: density outside the mask renders as zero (the "only voxels
+  // within X of the surface" view). Passing null textures disables. The
+  // shader is a compile-time variant, so toggling rebuilds the program.
+  void SetDensityMask(const SurfaceMask* mask);  // null disables
+  void SetMaskStyle(float strength) { MaskStrength = strength; }
+  void SetMaskIsolate(bool isolate) { MaskIsolate = isolate; }
+  // Secondary instances (extra windows) skip cache upkeep and callbacks the
+  // primary already performs each frame.
+  void SetPrimary(bool p) { Primary = p; }
+
+  // Prediction overlay (e.g. 3D ink detection): a second, co-registered
+  // volume with its own brick cache/page tables, sampled at every visible
+  // sample and blended in as a hot tint above `threshold`. The overlay
+  // volume shares the physical extent of the main volume (it is typically
+  // a downsampled prediction pyramid).
+  void SetOverlay(GpuBrickCache* cache,
+                  const std::array<std::uint64_t, 3>& shapeZyx);
+  void SetOverlayStyle(float strength, float threshold) {
+    OverlayStrength = strength;
+    OverlayThreshold = threshold;
+  }
+
+  // Supervoxel clusters (3D SNIC), rendered as lit sphere impostors in
+  // render mode 3. World-space centers/radii; value drives the color ramp.
+  struct ClusterSphere {
+    float x, y, z, radius, value;
+  };
+  void SetClusters(std::vector<ClusterSphere> cs) {
+    Clusters = std::move(cs);
+    ClustersDirty = true;
+  }
 
  protected:
   vtkScrollVolumeMapper();
@@ -72,7 +157,13 @@ class vtkScrollVolumeMapper : public vtkVolumeMapper {
   vtkScrollVolumeMapper(const vtkScrollVolumeMapper&) = delete;
   void operator=(const vtkScrollVolumeMapper&) = delete;
 
+  std::string BuildCommonGlsl() const;
   std::string BuildFragmentShader() const;
+  std::string BuildSurfaceVertexShader() const;
+  std::string BuildSurfaceFragmentShader() const;
+  void EnsureSurfaceMesh();
+  void RenderSurface(vtkOpenGLRenderWindow* renWin, vtkRenderer* ren);
+  void RenderClusters(vtkOpenGLRenderWindow* renWin, vtkRenderer* ren);
 
   GpuBrickCache* Cache = nullptr;
   std::function<void()> PreRender;
@@ -93,6 +184,40 @@ class vtkScrollVolumeMapper : public vtkVolumeMapper {
   float Window = 1.f;
   float Level = 0.5f;
   float OpacityScale = 0.05f;
+  int RenderMode = 0;
+  int FilterOp = 0;
+  float FilterAmount = 1.f;
+  float FilterFloor = 0.f;
+  float LightDir[3] = {0.42f, 0.31f, 0.85f};
+  float LightAmbient = 1.f;
+  bool ShadowsOn = true;
+
+  // Surface pass state. The shader program is owned by VTK's shader cache.
+  std::shared_ptr<const data::TifXyzSurface> Surface;
+  bool SurfaceDirty = false;
+  unsigned int SurfVao = 0, SurfVbo = 0, SurfIbo = 0;
+  int SurfIndexCount = 0;
+  std::string SurfVsSrc, SurfFsSrc;
+  float SlabFront = 8.f, SlabBehind = 8.f;
+  float SurfScale = 1.f;
+  bool SlabMean = false;
+  bool ShowVolume = true, ShowSurface = true;
+  bool Primary = true;
+  const SurfaceMask* Mask = nullptr;
+  float MaskStrength = 0.6f;
+  bool MaskIsolate = false;
+
+  std::vector<ClusterSphere> Clusters;
+  std::vector<ClusterSphere> ClusterSorted;  // back-to-front order
+  double LastSortDop[3] = {0, 0, 0};
+  bool ClustersDirty = false;
+  unsigned int ClusterVao = 0, ClusterVbo = 0;
+  std::string ClusterVsSrc, ClusterFsSrc;
+
+  GpuBrickCache* Overlay = nullptr;
+  std::array<std::uint64_t, 3> OverlayShapeZyx{1, 1, 1};
+  float OverlayStrength = 0.7f;
+  float OverlayThreshold = 0.4f;
 
   double Bounds[6] = {0, 1, 0, 1, 0, 1};
   std::unique_ptr<vtkOpenGLQuadHelper> Quad;

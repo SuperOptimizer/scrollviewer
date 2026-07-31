@@ -19,11 +19,18 @@ int main(int argc, char** argv) {
 
   QApplication app(argc, argv);
 
-  // Default to the local test volume; accept a path or URL argument.
+  // Default to the local test volume; accept a path or URL argument, plus
+  // an optional tifxyz segment directory (or URL prefix) as a second arg.
+  // scrollviewer <volume> [tifxyz-dir] [surface-scale] [overlay-zarr]
   std::string source = "D:/scrolldata/PHerc0332-masked.zarr";
+  std::string surface, overlay;
+  double surfaceScale = 1.0;
   if (argc > 1) source = argv[1];
+  if (argc > 2) surface = argv[2];
+  if (argc > 3) surfaceScale = std::atof(argv[3]);
+  if (argc > 4) overlay = argv[4];
 
-  sv::app::ViewerWindow window(source);
+  sv::app::ViewerWindow window(source, surface, surfaceScale, overlay);
   window.show();
   return app.exec();
 }
